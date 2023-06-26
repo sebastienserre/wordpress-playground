@@ -489,6 +489,7 @@ RUN echo '#define ZEND_MM_ERROR 0' >> /root/php-src/main/php_config.h;
 
 # With HAVE_UNISTD_H=1 PHP complains about the missing getdtablesize() function 
 RUN /root/replace.sh 's/define HAVE_UNISTD_H 1/define HAVE_UNISTD_H 0/g' /root/php-src/main/php_config.h
+RUN /root/replace.sh 's/\(proc_open\)/(php_proc_open)/g' /root/php-src/ext/standard/proc_open.c
 
 # PHP <= 7.3 is not very good at detecting the presence of the POSIX readdir_r function
 # so we need to force it to be enabled.
@@ -509,6 +510,10 @@ RUN perl -pi.bak -e $'s/(\s+)closesocket\(/$1 wasm_close(/g' /root/php-src/sapi/
 RUN echo 'extern int wasm_shutdown(int fd, int how);' >> /root/php-src/main/php_config.h; 
 RUN echo 'extern int wasm_close(int fd);' >> /root/php-src/main/php_config.h; 
 
+# Provide a custom implementation of the proc_open() function.
+RUN echo '' > /root/php-src/ext/standard/proc_open.h;
+RUN echo '' > /root/php-src/ext/standard/proc_open.c; 
+
 RUN source /root/emsdk/emsdk_env.sh && \
     # We're compiling PHP as emscripten's side module...
     EMCC_FLAGS=" -sSIDE_MODULE -Dsetsockopt=wasm_setsockopt -Dpopen=wasm_popen -Dpclose=wasm_pclose " \
@@ -520,6 +525,8 @@ RUN cp -v /root/php-src/.libs/libphp*.la /root/lib/libphp.la
 RUN cp -v /root/php-src/.libs/libphp*.a /root/lib/libphp.a
 
 COPY ./build-assets/php_wasm.c /root/
+COPY ./build-assets/proc_open.c /root/
+COPY ./build-assets/proc_open.h /root/
 
 RUN if [ "$EMSCRIPTEN_ENVIRONMENT" = "node" ]; then \
         # Add nodefs when building for node.js
@@ -586,6 +593,7 @@ RUN if [ "$WITH_WS_NETWORKING_PROXY" = "yes" ]; \
 "invoke_viiiiii",\n\
 "invoke_viiiiiii",\n\
 "invoke_viiiiiiiii",\n\
+"js_open_process",\n\
 "wasm_poll_socket",\n\
 "wasm_shutdown"]'; \
         echo -n " -s ASYNCIFY_IMPORTS=$ASYNCIFY_IMPORTS " | tr -d "\n" >> /root/.emcc-php-wasm-flags; \
@@ -620,7 +628,11 @@ RUN if [ "$WITH_WS_NETWORKING_PROXY" = "yes" ]; \
 "dynCall_viiiii",\
 "dynCall_viiiiiii",\
 "dynCall_viiiiiiii",'; \
-    export ASYNCIFY_ONLY=$'"zif_array_filter",\
+    export ASYNCIFY_ONLY=$'"__fwritex",\
+"fwrite",\
+"zif_fwrite",\
+"php_stdiop_write",\
+"zif_array_filter",\
 "zend_call_known_instance_method_with_2_params",\
 "zend_fetch_dimension_address_read_R",\
 "_zval_dtor_func_for_ptr",\
@@ -883,6 +895,7 @@ RUN if [ "$WITH_WS_NETWORKING_PROXY" = "yes" ]; \
 "zif_mysqli_stmt_execute",\
 "zif_mysqli_stmt_fetch",\
 "zif_preg_replace_callback",\
+"zif_proc_open",\
 "zif_stream_socket_client",\
 "zim_PDOStatement_execute",\
 "zim_PDO___construct",\
@@ -953,6 +966,7 @@ RUN source /root/emsdk/emsdk_env.sh && \
     -s INVOKE_RUN=0                  \
     -s EXIT_RUNTIME=1                \
         /root/lib/libphp.a \
+        /root/proc_open.c \
         /root/php_wasm.c \
         $(cat /root/.emcc-php-wasm-sources) \
     -s ENVIRONMENT=$EMSCRIPTEN_ENVIRONMENT \

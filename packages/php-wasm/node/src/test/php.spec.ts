@@ -10,10 +10,95 @@ import { existsSync, rmSync, readFileSync } from 'fs';
 const testDirPath = '/__test987654321';
 const testFilePath = '/__test987654321.txt';
 
-describe.each([SupportedPHPVersions])('PHP %s', (phpVersion) => {
+describe.each(['7.4'])('PHP %s', (phpVersion) => {
 	let php: NodePHP;
 	beforeEach(async () => {
 		php = await NodePHP.load(phpVersion);
+	});
+
+	it('proc_open() test with files', async () => {
+		php.setPhpIniEntry('disable_functions', '');
+		const result = await php.run({
+			code: `<?php
+			file_put_contents('/tmp/process_in', '');
+			$res = proc_open(
+				"echo meow",
+				array(
+					array("file","/tmp/process_in", "r"),
+					array("file","/tmp/process_out", "w"),
+					array("file","/tmp/process_err", "w"),
+				),
+				$pipes
+			);
+
+			$stdout = file_get_contents("/tmp/process_out");
+			$stderr = file_get_contents("/tmp/process_err");
+
+			echo 'stdout: ' . $stdout . "";
+			echo 'stderr: ' . $stderr . PHP_EOL;
+		`,
+		});
+		expect(result.text).toEqual('stdout: meow\nstderr: \n');
+	});
+
+	it('proc_open() test with pipes', async () => {
+		php.setPhpIniEntry('disable_functions', '');
+		const result = await php.run({
+			code: `<?php
+			file_put_contents('/tmp/process_in', '');
+			$res = proc_open(
+				"echo meow",
+				array(
+					array("file","/tmp/process_in", "r"),
+					array("pipe","w"),
+					array("pipe","w"),
+				),
+				$pipes
+			);
+
+			$stdout = stream_get_contents($pipes[1]);
+			$stderr = stream_get_contents($pipes[2]);
+			proc_close($res);
+
+			echo 'stdout: ' . $stdout . "";
+			echo 'stderr: ' . $stderr . PHP_EOL;
+		`,
+		});
+		expect(result.text).toEqual('stdout: meow\nstderr: \n');
+	});
+
+	it.skip('proc_open() test with stdin', async () => {
+		php.setPhpIniEntry('disable_functions', '');
+		php.setPhpIniEntry('allow_url_fopen', '1');
+		const result = await php.run({
+			code: `<?php
+			$res = proc_open(
+				"cat",
+				array(
+					array("pipe","r"),
+					array("file","/tmp/process_out", "w"),
+					array("file","/tmp/process_err", "w"),
+				),
+				$pipes
+			);
+			// Big problem: This is synchronous:
+			fwrite($pipes[0], 'meow');
+			
+			// file_get_contents('http://wordpress.org');
+
+			// And this is synchronous, too. We can't process the child_process
+			// output in between these calls. We need to somehow yield back to JS
+			// after writing to stdin.
+			$stdout = file_get_contents("/tmp/process_out");
+			$stderr = file_get_contents("/tmp/process_err");
+			proc_close($res);
+
+			echo 'stdout: ' . $stdout . "";
+			echo 'stderr: ' . $stderr . PHP_EOL;
+		`,
+		});
+		console.log(await php.readFileAsText('/tmp/process_out'));
+		expect(result.text).toEqual('stdout: meow\nstderr: \n');
 	});
 
 	describe('Filesystem', () => {

@@ -165,6 +165,92 @@ const LibraryExample = {
 		}
 	},
 
+	js_create_input_device: function (procopenCallId) {
+		if (!PHPWASM.callback_pipes) {
+			PHPWASM.callback_pipes = {};
+		}
+		let dataBuffer = [];
+		let dataCallback;
+		const filename = "proc_id_" + procopenCallId;
+		   const device = FS.createDevice("/dev", filename, function () {
+		}, function (byte) {
+			try {
+				dataBuffer.push(byte);
+				if (dataCallback) {
+					dataCallback(new Uint8Array(dataBuffer));
+					dataBuffer = [];
+				}
+			} catch (e) {
+				console.error(e);
+				throw e;
+			}
+		});
+		
+		const devicePath = "/dev/" + filename;
+		PHPWASM.callback_pipes[procopenCallId] = {
+			devicePath: devicePath,
+			onData: function(cb) {
+				dataCallback = cb;
+				dataBuffer.forEach(function(data) {
+					cb(data);
+				});
+				dataBuffer.length = 0;
+			}
+		};
+		return allocateUTF8OnStack(devicePath);
+	},
+
+	js_open_process: function(command, procopenCallId, stdoutFd, stderrFd) {
+		if (!command) return 1;
+		const cmdstr = UTF8ToString(command);
+		if (!cmdstr.length) return 0;
+		const cp = require("child_process").spawn(cmdstr, [], {
+			shell: true,
+			stdio: ["pipe", "pipe", "pipe"],
+			timeout: 100
+		});
+		// log on cp close
+		cp.on('error', (code) => {
+			console.log(`child process errored with code ${code}`);
+		});
+		cp.on('close', (code) => {
+			console.log(`child process closed with code ${code}`);
+		});
+		cp.on('exit', (code) => {
+			console.log(`child process exited with code ${code}`);
+		});
+		   
+		// This doesn't seem to work:
+		cp.stdin.setEncoding('utf-8');
+	   
+		if (PHPWASM.callback_pipes && procopenCallId in PHPWASM.callback_pipes) {
+		   PHPWASM.callback_pipes[procopenCallId].onData(function (data) {
+			   console.log('writing data to stdin', { data })
+			   if (!data) return;
+			   const dataStr = new TextDecoder("utf-8").decode(data);
+			   console.log({ dataStr });
+			   cp.stdin.write(dataStr);
+		   });
+		}
+		const stdoutStream = SYSCALLS.getStreamFromFD(stdoutFd);
+		const stderrStream = SYSCALLS.getStreamFromFD(stderrFd);
+		cp.stdout.on("data", function(data) {
+		 stdoutStream.stream_ops.write(stdoutStream, data, 0, data.length, 0);
+		});
+		cp.stderr.on("data", function(data) {
+		 stderrStream.stream_ops.write(stderrStream, data, 0, data.length, 0);
+		});
+		return Asyncify.handleSleep(wakeUp => {
+			// setTimeout is needed because otherwise
+			// we'll finish synchronously and JS will
+			// not get a chance to write the data to
+			// the stdout stream
+			setTimeout(() => {
+			   wakeUp();
+			}, 10);
+		});
+	},
+
 	/**
 	 * Shims poll(2) functionallity for asynchronous websockets:
 	 * https://man7.org/linux/man-pages/man2/poll.2.html
